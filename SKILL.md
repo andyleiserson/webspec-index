@@ -1,3 +1,8 @@
+---
+name: webspec-index
+description: Use webspec-index to query WHATWG, W3C, and TC39 web specifications from the command line
+---
+
 # webspec-index
 
 Query WHATWG, W3C, and TC39 web specifications from the command line.

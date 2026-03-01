@@ -13,6 +13,7 @@ pub mod provider;
 pub mod spec_registry;
 
 use anyhow::Result;
+use rusqlite::Connection;
 
 /// Parse a spec#anchor string or full URL into (spec, anchor) tuple
 pub fn parse_spec_anchor(input: &str) -> Result<(String, String)> {
@@ -255,8 +256,30 @@ pub fn search_sections(
     limit: usize,
 ) -> Result<model::SearchResult> {
     let conn = db::open_or_create_db()?;
+    let entries = match search_sections_fts(&conn, query, spec, limit) {
+        Ok(entries) => entries,
+        Err(err) if is_fts_syntax_error(&err) => {
+            if let Some(sanitized) = sanitize_for_fts(query) {
+                search_sections_fts(&conn, &sanitized, spec, limit)?
+            } else {
+                vec![]
+            }
+        }
+        Err(err) => return Err(err.into()),
+    };
 
-    // Search sections using FTS5
+    Ok(model::SearchResult {
+        query: query.to_string(),
+        results: entries,
+    })
+}
+
+fn search_sections_fts(
+    conn: &Connection,
+    query: &str,
+    spec: Option<&str>,
+    limit: usize,
+) -> rusqlite::Result<Vec<model::SearchEntry>> {
     let sql = if spec.is_some() {
         "SELECT s.anchor, sp.name, s.title, s.section_type, snippet(sections_fts, 2, '<mark>', '</mark>', '...', 64)
          FROM sections_fts
@@ -283,18 +306,32 @@ pub fn search_sections(
             snippet: row.get::<_, Option<String>>(4)?.unwrap_or_default(),
         })
     };
-    let entries: Vec<model::SearchEntry> = if let Some(spec_name) = spec {
+    if let Some(spec_name) = spec {
         stmt.query_map((query, spec_name, limit), map_row)?
-            .collect::<Result<Vec<_>, _>>()?
+            .collect::<rusqlite::Result<Vec<_>>>()
     } else {
         stmt.query_map((query, limit), map_row)?
-            .collect::<Result<Vec<_>, _>>()?
-    };
+            .collect::<rusqlite::Result<Vec<_>>>()
+    }
+}
 
-    Ok(model::SearchResult {
-        query: query.to_string(),
-        results: entries,
-    })
+fn is_fts_syntax_error(err: &rusqlite::Error) -> bool {
+    match err {
+        rusqlite::Error::SqliteFailure(_, Some(message)) => message.contains("fts5: syntax error"),
+        _ => false,
+    }
+}
+
+fn sanitize_for_fts(query: &str) -> Option<String> {
+    let terms = query
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|token| !token.is_empty())
+        .collect::<Vec<_>>();
+    if terms.is_empty() {
+        None
+    } else {
+        Some(terms.join(" "))
+    }
 }
 
 /// List all headings in a specification
@@ -495,5 +532,31 @@ mod tests {
         let html = urls.iter().find(|e| e.spec == "HTML");
         assert!(html.is_some());
         assert_eq!(html.unwrap().base_url, "https://html.spec.whatwg.org");
+    }
+
+    #[test]
+    fn sanitize_for_fts_handles_punctuation() {
+        let sanitized = sanitize_for_fts("Where is attribute reflection defined?");
+        assert_eq!(
+            sanitized.as_deref(),
+            Some("Where is attribute reflection defined")
+        );
+    }
+
+    #[test]
+    fn sanitize_for_fts_returns_none_when_no_terms() {
+        assert_eq!(sanitize_for_fts("???"), None);
+    }
+
+    #[test]
+    fn detects_fts_syntax_error_message() {
+        let err = rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error {
+                code: rusqlite::ErrorCode::Unknown,
+                extended_code: 1,
+            },
+            Some("fts5: syntax error near \"?\"".to_string()),
+        );
+        assert!(is_fts_syntax_error(&err));
     }
 }

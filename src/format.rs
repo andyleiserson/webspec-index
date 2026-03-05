@@ -1,6 +1,9 @@
 //! Markdown output formatters for CLI commands
 
-use crate::model::{AnchorsResult, ExistsResult, ListEntry, QueryResult, RefsResult, SearchResult};
+use crate::model::{
+    AnchorsResult, ExistsResult, FindReferencesResult, GraphResult, ListEntry, QueryResult,
+    RefsResult, SearchResult,
+};
 
 #[cfg(test)]
 use crate::model::{AnchorEntry, SearchEntry};
@@ -214,6 +217,167 @@ pub fn refs(result: &RefsResult) -> String {
     }
 
     md
+}
+
+/// Format a FindReferencesResult as markdown
+pub fn find_references(result: &FindReferencesResult) -> String {
+    let mut md = String::new();
+    md.push_str(&format!(
+        "# find-references: `{}` ({})\n\n",
+        result.query, result.direction
+    ));
+
+    if result.matches.is_empty() {
+        md.push_str("No matches found in indexed specs.\n");
+        return md;
+    }
+
+    for m in &result.matches {
+        md.push_str(&format!(
+            "## {}#{} ({}, {})\n\n",
+            m.spec, m.anchor, m.section_type, m.resolution
+        ));
+        if let Some(title) = &m.title {
+            md.push_str(&format!("Title: **{}**\n\n", title));
+        }
+
+        if let Some(incoming) = &m.incoming {
+            md.push_str(&format!("Incoming: {}\n", incoming.len()));
+            for r in incoming {
+                md.push_str(&format!("- {}#{}\n", r.spec, r.anchor));
+            }
+            md.push('\n');
+        }
+
+        if let Some(outgoing) = &m.outgoing {
+            md.push_str(&format!("Outgoing: {}\n", outgoing.len()));
+            for r in outgoing {
+                md.push_str(&format!("- {}#{}\n", r.spec, r.anchor));
+            }
+            md.push('\n');
+        }
+    }
+
+    md
+}
+
+/// Format a GraphResult as markdown
+pub fn graph(result: &GraphResult) -> String {
+    let mut md = String::new();
+    md.push_str(&format!(
+        "# graph {}#{} ({})\n\n",
+        result.root.spec, result.root.anchor, result.direction
+    ));
+    md.push_str(&format!(
+        "Nodes: {} | Edges: {} | Max depth: {} | Truncated: {}\n\n",
+        result.nodes.len(),
+        result.edges.len(),
+        result.max_depth,
+        result.truncated
+    ));
+
+    md.push_str("## Nodes\n\n");
+    for node in &result.nodes {
+        md.push_str(&format!(
+            "- `{}`{}\n",
+            node.id,
+            node.title
+                .as_deref()
+                .map_or(String::new(), |t| format!(" — {}", t))
+        ));
+    }
+
+    md.push_str("\n## Edges\n\n");
+    for edge in &result.edges {
+        md.push_str(&format!(
+            "- `{}` -> `{}` ({})\n",
+            edge.from, edge.to, edge.kind
+        ));
+    }
+
+    md
+}
+
+fn escape_mermaid_label(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+fn escape_dot_label(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+/// Render a GraphResult as Mermaid flowchart.
+pub fn graph_mermaid(result: &GraphResult) -> String {
+    let mut out = String::from("graph TD\n");
+    let mut ids = std::collections::HashMap::new();
+    let mut bridge_nodes = Vec::new();
+    let mut root_nodes = Vec::new();
+
+    for (idx, node) in result.nodes.iter().enumerate() {
+        let local_id = format!("n{}", idx);
+        ids.insert(node.id.clone(), local_id.clone());
+        let label = if let Some(title) = &node.title {
+            format!("{}<br>{}", node.id, title.replace('\n', "<br>"))
+        } else {
+            node.id.clone()
+        };
+        out.push_str(&format!(
+            "  {}[\"{}\"]\n",
+            local_id,
+            escape_mermaid_label(&label)
+        ));
+
+        if let Some(role) = &node.filter_role {
+            match role.as_str() {
+                "bridge" => bridge_nodes.push(local_id.clone()),
+                "root" => root_nodes.push(local_id.clone()),
+                _ => {}
+            }
+        }
+    }
+
+    for edge in &result.edges {
+        if let (Some(from), Some(to)) = (ids.get(&edge.from), ids.get(&edge.to)) {
+            out.push_str(&format!("  {} --> {}\n", from, to));
+        }
+    }
+
+    if !bridge_nodes.is_empty() {
+        out.push_str("  classDef bridge stroke-dasharray: 5 5\n");
+        out.push_str(&format!("  class {} bridge\n", bridge_nodes.join(",")));
+    }
+    if !root_nodes.is_empty() {
+        out.push_str("  classDef root stroke-width: 3px\n");
+        out.push_str(&format!("  class {} root\n", root_nodes.join(",")));
+    }
+
+    out
+}
+
+/// Render a GraphResult as Graphviz DOT.
+pub fn graph_dot(result: &GraphResult) -> String {
+    let mut out = String::from("digraph webspec {\n  rankdir=LR;\n");
+
+    for node in &result.nodes {
+        let escaped_id = escape_dot_label(&node.id);
+        let label = if let Some(title) = &node.title {
+            format!("{}\\n{}", escaped_id, escape_dot_label(title))
+        } else {
+            escaped_id.clone()
+        };
+        out.push_str(&format!("  \"{}\" [label=\"{}\"];\n", escaped_id, label));
+    }
+
+    for edge in &result.edges {
+        out.push_str(&format!(
+            "  \"{}\" -> \"{}\";\n",
+            escape_dot_label(&edge.from),
+            escape_dot_label(&edge.to)
+        ));
+    }
+
+    out.push_str("}\n");
+    out
 }
 
 #[cfg(test)]

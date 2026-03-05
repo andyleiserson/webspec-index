@@ -188,3 +188,65 @@ pub struct RefsResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub incoming: Option<Vec<RefEntry>>,
 }
+
+/// JSON output for graph command
+#[derive(Debug, Serialize)]
+pub struct GraphResult {
+    pub root: GraphRoot,
+    pub direction: String,
+    pub max_depth: usize,
+    pub max_nodes: usize,
+    pub truncated: bool,
+    pub nodes: Vec<GraphNode>,
+    pub edges: Vec<GraphEdge>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct GraphRoot {
+    pub spec: String,
+    pub anchor: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct GraphNode {
+    pub id: String, // "{spec}#{anchor}"
+    pub spec: String,
+    pub anchor: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "type")]
+    pub section_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub filter_role: Option<String>, // root | matched | bridge
+}
+
+#[derive(Debug, Serialize)]
+pub struct GraphEdge {
+    pub from: String, // node id
+    pub to: String,   // node id
+    pub kind: String, // currently always "reference"
+}
+
+/// JSON output for find-references command
+#[derive(Debug, Serialize)]
+pub struct FindReferencesResult {
+    pub query: String,
+    pub direction: String,
+    pub matches: Vec<FindReferencesMatch>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct FindReferencesMatch {
+    pub spec: String,
+    pub anchor: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(rename = "type")]
+    pub section_type: String,
+    pub resolution: String, // exact | heuristic
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub outgoing: Option<Vec<RefEntry>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub incoming: Option<Vec<RefEntry>>,
+}

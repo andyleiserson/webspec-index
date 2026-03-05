@@ -6,6 +6,7 @@ Query WHATWG, W3C, and TC39 web specifications from the command line.
 
 - **Full-text search** across HTML, DOM, URL, CSS, ECMAScript, and 70+ other specifications
 - **Cross-reference tracking** — see incoming/outgoing references between spec sections
+- **Graph traversal** — build cross-reference graphs with JSON, Mermaid, or Graphviz DOT output
 - **Fast SQLite indexing** with FTS5 for instant queries
 - **Algorithm and IDL extraction** with rendered markdown content
 - **LSP server** for inline spec hovers and step validation in your editor
@@ -45,6 +46,16 @@ webspec-index list HTML
 
 # Cross-references
 webspec-index refs "HTML#navigate" --direction incoming
+
+# Graph traversal
+webspec-index graph "HTML#navigate" --max-depth 2 --graph-format mermaid
+webspec-index graph "HTML#navigate" --graph-format dot
+webspec-index graph "HTML#navigate" --same-spec-only
+webspec-index graph "HTML#navigate" --include "*concept-*" --exclude "re:^URL#"
+
+# Find references (exact or shorthand)
+webspec-index find-references "HTML#dom-window-navigation"
+webspec-index find-references "Window.navigation" --direction incoming
 
 # Update specs to latest versions
 webspec-index update

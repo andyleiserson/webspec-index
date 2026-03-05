@@ -42,6 +42,14 @@ enum OutputFormat {
     Markdown,
 }
 
+#[derive(ValueEnum, Clone, Debug)]
+enum GraphOutputFormat {
+    Json,
+    Markdown,
+    Mermaid,
+    Dot,
+}
+
 #[derive(Subcommand, Debug)]
 enum Command {
     /// Query a specific section in a specification
@@ -127,6 +135,81 @@ enum Command {
         direction: String,
     },
 
+    /// Find references for SPEC#anchor or shorthand (e.g. Window.navigation)
+    #[command(long_about = "Find references for a target section.\n\n\
+        Target can be SPEC#anchor (exact), full URL, or shorthand such as\n\
+        Interface.member (heuristic match against indexed sections).\n\n\
+        Examples:\n  \
+        webspec-index find-references HTML#navigate\n  \
+        webspec-index find-references Window.navigation --direction incoming")]
+    FindReferences {
+        /// Target identifier: SPEC#anchor, full URL, or shorthand (e.g. Window.navigation)
+        target: String,
+
+        #[arg(
+            long,
+            short,
+            default_value = "incoming",
+            help = "Reference direction: incoming, outgoing, or both"
+        )]
+        direction: String,
+
+        #[arg(long, short, default_value = "10", help = "Maximum number of matches")]
+        limit: usize,
+    },
+
+    /// Build a cross-reference graph rooted at a section
+    #[command(
+        long_about = "Build a cross-reference graph rooted at SPEC#anchor.\n\n\
+        Traverses indexed references up to --max-depth and returns a graph.\n\
+        Output formats: json, markdown, mermaid, dot.\n\n\
+        Examples:\n  \
+        webspec-index graph HTML#navigate --direction outgoing --max-depth 2\n  \
+        webspec-index graph HTML#navigate --graph-format mermaid"
+    )]
+    Graph {
+        /// Root section identifier: SPEC#anchor or full URL
+        spec_anchor: String,
+
+        #[arg(
+            long,
+            short,
+            default_value = "outgoing",
+            help = "Traversal direction: incoming, outgoing, or both"
+        )]
+        direction: String,
+
+        #[arg(long, default_value = "2", help = "Maximum traversal depth")]
+        max_depth: usize,
+
+        #[arg(long, default_value = "150", help = "Maximum number of graph nodes")]
+        max_nodes: usize,
+
+        #[arg(
+            long = "include",
+            help = "Include node id patterns (wildcard by default, or re:<regex>)",
+            action = clap::ArgAction::Append
+        )]
+        include: Vec<String>,
+
+        #[arg(
+            long = "exclude",
+            help = "Exclude node id patterns (wildcard by default, or re:<regex>)",
+            action = clap::ArgAction::Append
+        )]
+        exclude: Vec<String>,
+
+        #[arg(long, help = "Keep only nodes/edges within the root spec")]
+        same_spec_only: bool,
+
+        #[arg(
+            long,
+            default_value = "json",
+            help = "Graph output format: json, markdown, mermaid, dot"
+        )]
+        graph_format: GraphOutputFormat,
+    },
+
     /// Update specifications to latest versions
     #[command(
         long_about = "Update specifications to latest versions from WHATWG/W3C/TC39.\n\n\
@@ -176,10 +259,12 @@ update [-s SPEC] [-f force]
 clear-db [-y skip confirm]
 specs — list all known spec names+URLs
 lsp — start LSP server on stdio
+find-references <TARGET> [-d incoming|outgoing|both(default incoming)] [-l N(10)]
+graph <SPEC#anchor|URL> [-d incoming|outgoing|both(default outgoing)] [--max-depth N(2)] [--max-nodes N(150)] [--include PATTERN --exclude PATTERN --same-spec-only] [--graph-format json|markdown|mermaid|dot]
 SPEC#anchor examples: HTML#navigate, DOM#concept-tree, CSS-GRID#grid-container
 Full URL also works: https://html.spec.whatwg.org/#navigate
 Ex: query HTML#navigate|search "tree order" -s DOM|anchors "*-tree" -s DOM
-Ex: refs HTML#navigate -d incoming|list DOM|update -s HTML
+Ex: refs HTML#navigate -d incoming|find-references Window.navigation|graph HTML#navigate --graph-format mermaid
 "#
     );
 }
@@ -278,6 +363,53 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         } => {
             let result = webspec_index::get_references(&spec_anchor, &direction).await?;
             print_output(&cli.format, &result, format::refs);
+            Ok(ExitCode::SUCCESS)
+        }
+
+        Command::FindReferences {
+            target,
+            direction,
+            limit,
+        } => {
+            let result = webspec_index::find_references(&target, &direction, limit).await?;
+            print_output(&cli.format, &result, format::find_references);
+            Ok(ExitCode::SUCCESS)
+        }
+
+        Command::Graph {
+            spec_anchor,
+            direction,
+            max_depth,
+            max_nodes,
+            include,
+            exclude,
+            same_spec_only,
+            graph_format,
+        } => {
+            let result = webspec_index::graph_section(
+                &spec_anchor,
+                &direction,
+                max_depth,
+                max_nodes,
+                &include,
+                &exclude,
+                same_spec_only,
+            )
+            .await?;
+            match graph_format {
+                GraphOutputFormat::Json => {
+                    println!("{}", serde_json::to_string_pretty(&result)?);
+                }
+                GraphOutputFormat::Markdown => {
+                    print!("{}", format::graph(&result));
+                }
+                GraphOutputFormat::Mermaid => {
+                    print!("{}", format::graph_mermaid(&result));
+                }
+                GraphOutputFormat::Dot => {
+                    print!("{}", format::graph_dot(&result));
+                }
+            }
             Ok(ExitCode::SUCCESS)
         }
 

@@ -70,11 +70,26 @@ fn sync_from_html(
     Ok((snapshot_id, true))
 }
 
-async fn fetch_live_html(base_url: &str) -> Result<String> {
-    let url = format!("{}/", base_url.trim_end_matches('/'));
+fn is_respec_source(html: &str) -> bool {
+    html.contains("respec-w3c") || html.contains("respec.js") || html.contains("/respec/")
+}
+
+async fn render_via_spec_generator(url: &str) -> Result<String> {
+    let api_url = format!(
+        "https://www.w3.org/publications/spec-generator/?type=respec&url={}",
+        url::form_urlencoded::byte_serialize(url.as_bytes()).collect::<String>()
+    );
+    let html = fetch_raw_html(&api_url).await?;
+    if html.trim_start().starts_with('{') {
+        anyhow::bail!("spec-generator returned error: {}", &html[..html.len().min(200)]);
+    }
+    Ok(html)
+}
+
+async fn fetch_raw_html(url: &str) -> Result<String> {
     let client = reqwest::Client::new();
     let response = client
-        .get(&url)
+        .get(url)
         .header("User-Agent", "webspec-index/0.5.0")
         .send()
         .await?;
@@ -82,6 +97,21 @@ async fn fetch_live_html(base_url: &str) -> Result<String> {
         anyhow::bail!("Failed to fetch {}: HTTP {}", url, response.status());
     }
     Ok(response.text().await?)
+}
+
+async fn fetch_live_html(base_url: &str) -> Result<String> {
+    let url = format!("{}/", base_url.trim_end_matches('/'));
+    let html = fetch_raw_html(&url).await?;
+
+    if is_respec_source(&html) {
+        eprintln!("note: {} is a live ReSpec document; rendering via W3C spec-generator", url);
+        match render_via_spec_generator(&url).await {
+            Ok(rendered) => return Ok(rendered),
+            Err(e) => eprintln!("warning: spec-generator failed ({}), using raw HTML", e),
+        }
+    }
+
+    Ok(html)
 }
 
 async fn sync_known_spec(

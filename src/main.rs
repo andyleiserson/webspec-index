@@ -503,16 +503,19 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             groups_dir,
             output,
         } => {
-            let (csswg_count, standalone_count) =
+            let (csswg_count, standalone_count, entries) =
                 webspec_index::spec_list::update(&csswg_dir, &groups_dir, &output)?;
+            let conn = webspec_index::db::open_or_create_db()?;
+            for e in &entries {
+                webspec_index::db::write::insert_or_get_spec(&conn, &e.name, &e.base_url, &e.provider)?;
+            }
             eprintln!(
-                "wrote {} specs to {} ({} CSSWG + {} standalone)",
+                "wrote {} specs to {} ({} CSSWG + {} standalone); seeded DB",
                 csswg_count + standalone_count,
                 output.display(),
                 csswg_count,
                 standalone_count
             );
-            eprintln!("Rebuild to apply the new spec list.");
             Ok(ExitCode::SUCCESS)
         }
     }

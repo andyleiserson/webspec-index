@@ -20,7 +20,7 @@ pub struct SpecEntry {
 /// This covers W3C specs only. WHATWG specs (HTML, DOM, Fetch, …) and TC39
 /// specs (ECMAScript, …) are small, stable lists hardcoded in their respective
 /// providers (`src/provider/whatwg.rs`, `src/provider/tc39.rs`).
-pub fn update(csswg_dir: &Path, groups_dir: &Path, output: &Path) -> Result<(usize, usize)> {
+pub fn update(csswg_dir: &Path, groups_dir: &Path, output: &Path) -> Result<(usize, usize, Vec<SpecEntry>)> {
     clone_or_update(CSSWG_URL, csswg_dir)?;
     clone_or_update(GROUPS_URL, groups_dir)?;
 
@@ -45,7 +45,7 @@ pub fn update(csswg_dir: &Path, groups_dir: &Path, output: &Path) -> Result<(usi
     std::fs::write(output, format!("{}\n", json))
         .with_context(|| format!("Failed to write {}", output.display()))?;
 
-    Ok((csswg_count, standalone_count))
+    Ok((csswg_count, standalone_count, all))
 }
 
 fn clone_or_update(url: &str, local_path: &Path) -> Result<()> {

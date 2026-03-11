@@ -507,7 +507,7 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                 webspec_index::spec_list::update(&csswg_dir, &groups_dir, &output)?;
             let conn = webspec_index::db::open_or_create_db()?;
             for e in &entries {
-                webspec_index::db::write::insert_or_get_spec(&conn, &e.name, &e.base_url, &e.provider)?;
+                webspec_index::db::write::seed_spec(&conn, &e.name, &e.base_url, &e.provider)?;
             }
             eprintln!(
                 "wrote {} specs to {} ({} CSSWG + {} standalone); seeded DB",

@@ -1,7 +1,7 @@
 // Write operations on the database
 use crate::model::{ParsedIdlDefinition, ParsedReference, ParsedSection};
 use anyhow::Result;
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 
 /// Insert or get a spec, returning its ID
 /// Uses INSERT OR IGNORE to avoid duplicates
@@ -23,6 +23,38 @@ pub fn insert_or_get_spec(
     })?;
 
     Ok(id)
+}
+
+/// Upsert spec metadata from the authoritative spec list.
+///
+/// Updates base_url and provider if they changed, and clears any stale indexed
+/// data so the spec gets re-fetched from the correct URL.
+pub fn seed_spec(conn: &Connection, name: &str, base_url: &str, provider: &str) -> Result<()> {
+    let existing: Option<(i64, String)> = conn
+        .query_row(
+            "SELECT id, base_url FROM specs WHERE name = ?1",
+            [name],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+
+    match existing {
+        None => {
+            conn.execute(
+                "INSERT INTO specs (name, base_url, provider) VALUES (?1, ?2, ?3)",
+                (name, base_url, provider),
+            )?;
+        }
+        Some((id, old_url)) if old_url != base_url => {
+            conn.execute(
+                "UPDATE specs SET base_url = ?1, provider = ?2 WHERE id = ?3",
+                (base_url, provider, id),
+            )?;
+            delete_spec_data(conn, id)?;
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 /// Insert a snapshot, returning its ID

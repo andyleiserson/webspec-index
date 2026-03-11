@@ -5,7 +5,7 @@ edition = "2021"
 description = "Query WHATWG/W3C/TC39 web specifications from the command line"
 license = "MIT"
 repository = "https://github.com/jnjaeschke/webspec-index"
-exclude = ["editors/", ".github/", "SKILL.md"]
+exclude = ["editors/", ".github/", "SKILL.md", "csswg-drafts/", "groups/"]
 
 [lib]
 name = "webspec_index"
@@ -60,8 +60,13 @@ moz-cli-version-check = "0.2"
 # SIGPIPE handling
 libc = "0.2"
 
+
+[build-dependencies]
+serde_json = "1.0"
+
 [dev-dependencies]
 tempfile = "3.24"
+
 
 [package.metadata.binstall]
 pkg-url = "{ repo }/releases/download/v{ version }/{ name }-{ version }-{ target }.{ archive-format }"

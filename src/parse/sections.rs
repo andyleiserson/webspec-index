@@ -328,6 +328,51 @@ fn extract_idl_content(element: &scraper::ElementRef) -> Option<String> {
     None
 }
 
+/// Parse a generic anchor-bearing element (tr, dt, section, li) into a ParsedSection.
+/// W3C specs use these as named targets that don't fit the dfn/heading pattern.
+pub fn parse_anchor_element(
+    element: &scraper::ElementRef,
+    converter: &HtmlToMarkdown,
+) -> Result<Option<ParsedSection>> {
+    use super::markdown;
+
+    let anchor = match element.value().attr("id") {
+        Some(id) => id.to_string(),
+        None => return Ok(None),
+    };
+
+    let title_text = element.text().collect::<String>();
+    let title_text = title_text.trim();
+    let title = if title_text.is_empty() {
+        None
+    } else {
+        let truncated = if title_text.len() > 120 {
+            format!("{}…", &title_text[..120])
+        } else {
+            title_text.to_string()
+        };
+        Some(truncated)
+    };
+
+    let content_text = {
+        let html = element.html();
+        let md = markdown::element_to_markdown_from_html(&html, converter);
+        let trimmed = md.trim().to_string();
+        if trimmed.is_empty() { None } else { Some(trimmed) }
+    };
+
+    Ok(Some(ParsedSection {
+        anchor,
+        title,
+        content_text,
+        section_type: crate::model::SectionType::Definition,
+        parent_anchor: None,
+        prev_anchor: None,
+        next_anchor: None,
+        depth: None,
+    }))
+}
+
 /// Parse an ecmarkup `<emu-clause>` or `<emu-annex>` element into a ParsedSection.
 /// TC39 specs use these custom elements instead of standard headings.
 /// The section ID is on the emu-clause, with an `<h1>` child containing the title.

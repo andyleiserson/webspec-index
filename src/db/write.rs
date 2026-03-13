@@ -1,7 +1,7 @@
 // Write operations on the database
-use crate::model::{ParsedReference, ParsedSection};
+use crate::model::{ParsedIdlDefinition, ParsedReference, ParsedSection};
 use anyhow::Result;
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 
 /// Insert or get a spec, returning its ID
 /// Uses INSERT OR IGNORE to avoid duplicates
@@ -23,6 +23,38 @@ pub fn insert_or_get_spec(
     })?;
 
     Ok(id)
+}
+
+/// Upsert spec metadata from the authoritative spec list.
+///
+/// Updates base_url and provider if they changed, and clears any stale indexed
+/// data so the spec gets re-fetched from the correct URL.
+pub fn seed_spec(conn: &Connection, name: &str, base_url: &str, provider: &str) -> Result<()> {
+    let existing: Option<(i64, String)> = conn
+        .query_row(
+            "SELECT id, base_url FROM specs WHERE name = ?1",
+            [name],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+
+    match existing {
+        None => {
+            conn.execute(
+                "INSERT INTO specs (name, base_url, provider) VALUES (?1, ?2, ?3)",
+                (name, base_url, provider),
+            )?;
+        }
+        Some((id, old_url)) if old_url != base_url => {
+            conn.execute(
+                "UPDATE specs SET base_url = ?1, provider = ?2 WHERE id = ?3",
+                (base_url, provider, id),
+            )?;
+            delete_spec_data(conn, id)?;
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 /// Insert a snapshot, returning its ID
@@ -110,6 +142,37 @@ pub fn insert_refs_bulk(
     Ok(())
 }
 
+/// Bulk insert IDL definitions for a snapshot
+pub fn insert_idl_defs_bulk(
+    conn: &Connection,
+    snapshot_id: i64,
+    defs: &[ParsedIdlDefinition],
+) -> Result<()> {
+    let tx = conn.unchecked_transaction()?;
+
+    {
+        let mut stmt = tx.prepare(
+            "INSERT INTO idl_defs (snapshot_id, anchor, name, owner, kind, canonical_name, idl_text)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        )?;
+
+        for def in defs {
+            stmt.execute((
+                snapshot_id,
+                &def.anchor,
+                &def.name,
+                &def.owner,
+                &def.kind,
+                &def.canonical_name,
+                &def.idl_text,
+            ))?;
+        }
+    }
+
+    tx.commit()?;
+    Ok(())
+}
+
 /// Delete all indexed data for a spec (snapshot, sections, refs).
 /// Used before re-indexing to enforce exactly one snapshot per spec.
 pub fn delete_spec_data(conn: &Connection, spec_id: i64) -> Result<()> {
@@ -117,6 +180,10 @@ pub fn delete_spec_data(conn: &Connection, spec_id: i64) -> Result<()> {
 
     tx.execute(
         "DELETE FROM refs WHERE snapshot_id IN (SELECT id FROM snapshots WHERE spec_id = ?1)",
+        [spec_id],
+    )?;
+    tx.execute(
+        "DELETE FROM idl_defs WHERE snapshot_id IN (SELECT id FROM snapshots WHERE spec_id = ?1)",
         [spec_id],
     )?;
     tx.execute(
@@ -129,29 +196,18 @@ pub fn delete_spec_data(conn: &Connection, spec_id: i64) -> Result<()> {
     Ok(())
 }
 
-/// Update the per-repo SHA cache entry, creating or replacing it.
-pub fn update_repo_sha_cache(
+/// Record spec sync metadata for freshness/content-hash based updates.
+pub fn record_update_check(
     conn: &Connection,
-    repo: &str,
-    sha: &str,
-    commit_date: &chrono::DateTime<chrono::Utc>,
+    spec_id: i64,
+    last_checked: &str,
+    last_indexed: Option<&str>,
+    content_hash: Option<&str>,
 ) -> Result<()> {
-    let checked_at = chrono::Utc::now().to_rfc3339();
     conn.execute(
-        "INSERT OR REPLACE INTO repo_version_cache (repo, sha, commit_date, checked_at)
+        "INSERT OR REPLACE INTO update_checks (spec_id, last_checked, last_indexed, content_hash)
          VALUES (?1, ?2, ?3, ?4)",
-        (repo, sha, &commit_date.to_rfc3339(), &checked_at),
-    )?;
-    Ok(())
-}
-
-/// Record that we checked for updates for a spec
-pub fn record_update_check(conn: &Connection, spec_id: i64) -> Result<()> {
-    let timestamp = chrono::Utc::now().to_rfc3339();
-
-    conn.execute(
-        "INSERT OR REPLACE INTO update_checks (spec_id, last_checked) VALUES (?1, ?2)",
-        (spec_id, timestamp),
+        (spec_id, last_checked, last_indexed, content_hash),
     )?;
 
     Ok(())
@@ -335,13 +391,61 @@ mod tests {
     }
 
     #[test]
+    fn test_insert_idl_defs_bulk() {
+        let conn = db::open_test_db().unwrap();
+        let spec_id =
+            insert_or_get_spec(&conn, "HTML", "https://html.spec.whatwg.org", "whatwg").unwrap();
+        let snapshot_id =
+            insert_snapshot(&conn, spec_id, "abc123", "2026-01-01T00:00:00Z").unwrap();
+
+        let defs = vec![
+            ParsedIdlDefinition {
+                anchor: "dom-window".to_string(),
+                name: "Window".to_string(),
+                owner: None,
+                kind: "interface".to_string(),
+                canonical_name: "Window".to_string(),
+                idl_text: Some("interface Window {};".to_string()),
+            },
+            ParsedIdlDefinition {
+                anchor: "dom-window-navigation".to_string(),
+                name: "navigation".to_string(),
+                owner: Some("Window".to_string()),
+                kind: "attribute".to_string(),
+                canonical_name: "Window.navigation".to_string(),
+                idl_text: Some(
+                    "interface Window { attribute Navigation navigation; };".to_string(),
+                ),
+            },
+        ];
+
+        insert_idl_defs_bulk(&conn, snapshot_id, &defs).unwrap();
+
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM idl_defs WHERE snapshot_id = ?1",
+                [snapshot_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 2);
+    }
+
+    #[test]
     fn test_record_update_check() {
         let conn = db::open_test_db().unwrap();
 
         let spec_id =
             insert_or_get_spec(&conn, "HTML", "https://html.spec.whatwg.org", "whatwg").unwrap();
 
-        record_update_check(&conn, spec_id).unwrap();
+        record_update_check(
+            &conn,
+            spec_id,
+            "2026-01-01T00:00:00Z",
+            Some("2026-01-01T00:00:00Z"),
+            Some("deadbeef"),
+        )
+        .unwrap();
 
         // Verify it was recorded
         let count: i64 = conn
@@ -354,7 +458,14 @@ mod tests {
         assert_eq!(count, 1);
 
         // Record again (should update, not insert new row)
-        record_update_check(&conn, spec_id).unwrap();
+        record_update_check(
+            &conn,
+            spec_id,
+            "2026-01-02T00:00:00Z",
+            None,
+            Some("beadfeed"),
+        )
+        .unwrap();
 
         let count: i64 = conn
             .query_row(
@@ -364,5 +475,16 @@ mod tests {
             )
             .unwrap();
         assert_eq!(count, 1);
+
+        let (checked, indexed, hash): (String, Option<String>, Option<String>) = conn
+            .query_row(
+                "SELECT last_checked, last_indexed, content_hash FROM update_checks WHERE spec_id = ?1",
+                [spec_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(checked, "2026-01-02T00:00:00Z");
+        assert_eq!(indexed, None);
+        assert_eq!(hash.as_deref(), Some("beadfeed"));
     }
 }

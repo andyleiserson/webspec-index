@@ -1,5 +1,6 @@
 pub mod algorithms;
 pub mod idl;
+pub mod idl_defs;
 pub mod markdown;
 pub mod references;
 pub mod sections;
@@ -20,8 +21,9 @@ pub fn parse_spec(html: &str, spec_name: &str, base_url: &str) -> Result<ParsedS
     // - headings (h2-h6 with id) — WHATWG/W3C specs
     // - definitions (dfn with id) — all specs
     // - emu-clause/emu-annex (with id) — TC39/ecmarkup specs
+    // - tr/dt/section/li with id — W3C specs use these as named anchor targets
     let selector = Selector::parse(
-        "h2[id], h3[id], h4[id], h5[id], h6[id], dfn[id], emu-clause[id], emu-annex[id]",
+        "h2[id], h3[id], h4[id], h5[id], h6[id], dfn[id], emu-clause[id], emu-annex[id], tr[id], dt[id], section[id], li[id]",
     )
     .map_err(|e| anyhow::anyhow!("Invalid selector: {:?}", e))?;
 
@@ -49,6 +51,11 @@ pub fn parse_spec(html: &str, spec_name: &str, base_url: &str) -> Result<ParsedS
                     sections.push(section);
                 }
             }
+            "tr" | "dt" | "section" | "li" => {
+                if let Some(section) = sections::parse_anchor_element(&element, &converter)? {
+                    sections.push(section);
+                }
+            }
             _ => {}
         }
     }
@@ -61,10 +68,12 @@ pub fn parse_spec(html: &str, spec_name: &str, base_url: &str) -> Result<ParsedS
     // For now, create an empty one (will be passed in later for full functionality)
     let registry = crate::spec_registry::SpecRegistry::new();
     let references = references::extract_references(html, spec_name, &sections, &registry);
+    let idl_definitions = idl_defs::extract_idl_definitions(html);
 
     Ok(ParsedSpec {
         sections,
         references,
+        idl_definitions,
     })
 }
 
@@ -119,6 +128,7 @@ mod tests {
 
         // Should have 7 sections total
         assert_eq!(parsed.sections.len(), 7);
+        assert!(!parsed.idl_definitions.is_empty());
 
         // Check section types and order
         assert_eq!(parsed.sections[0].anchor, "intro");
@@ -175,6 +185,7 @@ mod tests {
         let parsed = parse_spec(html, "TEST", "https://test.example.com").unwrap();
         assert_eq!(parsed.sections.len(), 0);
         assert_eq!(parsed.references.len(), 0);
+        assert_eq!(parsed.idl_definitions.len(), 0);
     }
 
     #[test]

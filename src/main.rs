@@ -42,6 +42,14 @@ enum OutputFormat {
     Markdown,
 }
 
+#[derive(ValueEnum, Clone, Debug)]
+enum GraphOutputFormat {
+    Json,
+    Markdown,
+    Mermaid,
+    Dot,
+}
+
 #[derive(Subcommand, Debug)]
 enum Command {
     /// Query a specific section in a specification
@@ -127,16 +135,107 @@ enum Command {
         direction: String,
     },
 
-    /// Update specifications to latest versions
+    /// Find references for SPEC#anchor or shorthand (e.g. Window.navigation)
+    #[command(long_about = "Find references for a target section.\n\n\
+        Target can be SPEC#anchor (exact), full URL, or shorthand such as\n\
+        Interface.member (heuristic match against indexed sections).\n\n\
+        Examples:\n  \
+        webspec-index find-references HTML#navigate\n  \
+        webspec-index find-references Window.navigation --direction incoming")]
+    FindReferences {
+        /// Target identifier: SPEC#anchor, full URL, or shorthand (e.g. Window.navigation)
+        target: String,
+
+        #[arg(
+            long,
+            short,
+            default_value = "incoming",
+            help = "Reference direction: incoming, outgoing, or both"
+        )]
+        direction: String,
+
+        #[arg(long, short, default_value = "10", help = "Maximum number of matches")]
+        limit: usize,
+    },
+
+    /// Build a cross-reference graph rooted at a section
     #[command(
-        long_about = "Update specifications to latest versions from WHATWG/W3C/TC39.\n\n\
-        Without --spec, updates all known specs. Uses 24h cache to avoid\n\
-        redundant fetches unless --force is given.\n\n\
+        long_about = "Build a cross-reference graph rooted at SPEC#anchor.\n\n\
+        Traverses indexed references up to --max-depth and returns a graph.\n\
+        Output formats: json, markdown, mermaid, dot.\n\n\
+        Examples:\n  \
+        webspec-index graph HTML#navigate --direction outgoing --max-depth 2\n  \
+        webspec-index graph HTML#navigate --graph-format mermaid"
+    )]
+    Graph {
+        /// Root section identifier: SPEC#anchor or full URL
+        spec_anchor: String,
+
+        #[arg(
+            long,
+            short,
+            default_value = "outgoing",
+            help = "Traversal direction: incoming, outgoing, or both"
+        )]
+        direction: String,
+
+        #[arg(long, default_value = "2", help = "Maximum traversal depth")]
+        max_depth: usize,
+
+        #[arg(long, default_value = "150", help = "Maximum number of graph nodes")]
+        max_nodes: usize,
+
+        #[arg(
+            long = "include",
+            help = "Include node id patterns (wildcard by default, or re:<regex>)",
+            action = clap::ArgAction::Append
+        )]
+        include: Vec<String>,
+
+        #[arg(
+            long = "exclude",
+            help = "Exclude node id patterns (wildcard by default, or re:<regex>)",
+            action = clap::ArgAction::Append
+        )]
+        exclude: Vec<String>,
+
+        #[arg(long, help = "Keep only nodes/edges within the root spec")]
+        same_spec_only: bool,
+
+        #[arg(
+            long,
+            default_value = "json",
+            help = "Graph output format: json, markdown, mermaid, dot"
+        )]
+        graph_format: GraphOutputFormat,
+    },
+
+    /// Query dedicated WebIDL definitions
+    #[command(long_about = "Query structured WebIDL definitions.\n\n\
+        Supports exact anchors and canonical names:\n  \
+        webspec-index idl HTML#dom-window-navigation\n  \
+        webspec-index idl Window.navigation\n  \
+        webspec-index idl Window.open()\n\n\
+        Use --spec to narrow to one specification.")]
+    Idl {
+        /// Query string: SPEC#anchor, full URL, or canonical IDL name
+        query: String,
+
+        #[arg(long, short, help = "Limit lookup to a specific spec (e.g. HTML, DOM)")]
+        spec: Option<String>,
+
+        #[arg(long, short, default_value = "20", help = "Maximum number of matches")]
+        limit: usize,
+    },
+
+    /// Update specifications to latest versions
+    #[command(long_about = "Update indexed specifications to latest versions.\n\n\
+        Without --spec, updates all currently indexed specs. Uses a 24h\n\
+        freshness window unless --force is given.\n\n\
         Examples:\n  \
         webspec-index update\n  \
         webspec-index update --spec HTML\n  \
-        webspec-index update --force"
-    )]
+        webspec-index update --force")]
     Update {
         #[arg(long, short, help = "Update only this spec")]
         spec: Option<String>,
@@ -151,11 +250,41 @@ enum Command {
         yes: bool,
     },
 
-    /// List all known spec names and base URLs
+    /// List indexed/discovered spec names and base URLs
     Specs,
 
     /// Start the Language Server Protocol server (stdio)
     Lsp,
+
+    /// Update the local W3C spec list from csswg-drafts and w3c/groups
+    ///
+    /// Clones (or updates) csswg-drafts and w3c/groups, then regenerates
+    /// data/w3c_specs.json. After running this command, rebuild to apply changes.
+    #[command(long_about = "Update the local W3C spec list.\n\n\
+        Clones (or updates) the csswg-drafts and w3c/groups repositories,\n\
+        then regenerates data/w3c_specs.json with all discovered specs.\n\
+        Rebuild after running this to apply the new spec list.\n\n\
+        Examples:\n  \
+        webspec-index update-spec-list\n  \
+        webspec-index update-spec-list --csswg-dir /path/to/csswg-drafts")]
+    UpdateSpecList {
+        #[arg(
+            long,
+            default_value = "csswg-drafts",
+            help = "Path to csswg-drafts clone"
+        )]
+        csswg_dir: std::path::PathBuf,
+
+        #[arg(long, default_value = "groups", help = "Path to w3c/groups clone")]
+        groups_dir: std::path::PathBuf,
+
+        #[arg(
+            long,
+            default_value = "data/w3c_specs.json",
+            help = "Output path for the spec list"
+        )]
+        output: std::path::PathBuf,
+    },
 }
 
 fn is_llm_environment() -> bool {
@@ -174,12 +303,16 @@ list <SPEC>
 refs <SPEC#anchor> [-d incoming|outgoing|both(default)]
 update [-s SPEC] [-f force]
 clear-db [-y skip confirm]
-specs — list all known spec names+URLs
+specs — list indexed/discovered spec names+URLs
 lsp — start LSP server on stdio
+find-references <TARGET> [-d incoming|outgoing|both(default incoming)] [-l N(10)]
+graph <SPEC#anchor|URL> [-d incoming|outgoing|both(default outgoing)] [--max-depth N(2)] [--max-nodes N(150)] [--include PATTERN --exclude PATTERN --same-spec-only] [--graph-format json|markdown|mermaid|dot]
+idl <Q|SPEC#anchor|URL> [-s SPEC] [-l N(20)] [--format json|markdown]
 SPEC#anchor examples: HTML#navigate, DOM#concept-tree, CSS-GRID#grid-container
 Full URL also works: https://html.spec.whatwg.org/#navigate
 Ex: query HTML#navigate|search "tree order" -s DOM|anchors "*-tree" -s DOM
-Ex: refs HTML#navigate -d incoming|list DOM|update -s HTML
+Ex: refs HTML#navigate -d incoming|find-references Window.navigation|graph HTML#navigate --graph-format mermaid
+Ex: idl Window.navigation|idl Window.open()|idl HTML#dom-window-navigation
 "#
     );
 }
@@ -281,6 +414,59 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             Ok(ExitCode::SUCCESS)
         }
 
+        Command::FindReferences {
+            target,
+            direction,
+            limit,
+        } => {
+            let result = webspec_index::find_references(&target, &direction, limit).await?;
+            print_output(&cli.format, &result, format::find_references);
+            Ok(ExitCode::SUCCESS)
+        }
+
+        Command::Graph {
+            spec_anchor,
+            direction,
+            max_depth,
+            max_nodes,
+            include,
+            exclude,
+            same_spec_only,
+            graph_format,
+        } => {
+            let result = webspec_index::graph_section(
+                &spec_anchor,
+                &direction,
+                max_depth,
+                max_nodes,
+                &include,
+                &exclude,
+                same_spec_only,
+            )
+            .await?;
+            match graph_format {
+                GraphOutputFormat::Json => {
+                    println!("{}", serde_json::to_string_pretty(&result)?);
+                }
+                GraphOutputFormat::Markdown => {
+                    print!("{}", format::graph(&result));
+                }
+                GraphOutputFormat::Mermaid => {
+                    print!("{}", format::graph_mermaid(&result));
+                }
+                GraphOutputFormat::Dot => {
+                    print!("{}", format::graph_dot(&result));
+                }
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+
+        Command::Idl { query, spec, limit } => {
+            let result = webspec_index::query_idl(&query, spec.as_deref(), limit).await?;
+            print_output(&cli.format, &result, format::idl);
+            Ok(ExitCode::SUCCESS)
+        }
+
         Command::Update { spec, force } => {
             let results = webspec_index::update_specs(spec.as_deref(), force).await?;
             let output: Vec<model::UpdateEntry> = results
@@ -317,6 +503,27 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
 
         Command::Lsp => {
             webspec_index::lsp::serve_stdio().await;
+            Ok(ExitCode::SUCCESS)
+        }
+
+        Command::UpdateSpecList {
+            csswg_dir,
+            groups_dir,
+            output,
+        } => {
+            let (csswg_count, standalone_count, entries) =
+                webspec_index::spec_list::update(&csswg_dir, &groups_dir, &output)?;
+            let conn = webspec_index::db::open_or_create_db()?;
+            for e in &entries {
+                webspec_index::db::write::seed_spec(&conn, &e.name, &e.base_url, &e.provider)?;
+            }
+            eprintln!(
+                "wrote {} specs to {} ({} CSSWG + {} standalone); seeded DB",
+                csswg_count + standalone_count,
+                output.display(),
+                csswg_count,
+                standalone_count
+            );
             Ok(ExitCode::SUCCESS)
         }
     }

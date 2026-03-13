@@ -1,14 +1,5 @@
 use serde::{Deserialize, Serialize};
 
-/// Static metadata for a spec
-#[derive(Debug, Clone)]
-pub struct SpecInfo {
-    pub name: &'static str,
-    pub base_url: &'static str,
-    pub provider: &'static str,
-    pub github_repo: &'static str,
-}
-
 /// Type of a section
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -68,11 +59,23 @@ pub struct ParsedReference {
     pub to_anchor: String,
 }
 
+/// A parsed WebIDL definition from `dfn[data-dfn-type]`
+#[derive(Debug, Clone)]
+pub struct ParsedIdlDefinition {
+    pub anchor: String,
+    pub name: String,
+    pub owner: Option<String>,
+    pub kind: String,
+    pub canonical_name: String,
+    pub idl_text: Option<String>,
+}
+
 /// Complete parsed spec
 #[derive(Debug)]
 pub struct ParsedSpec {
     pub sections: Vec<ParsedSection>,
     pub references: Vec<ParsedReference>,
+    pub idl_definitions: Vec<ParsedIdlDefinition>,
 }
 
 /// JSON output for query command
@@ -187,4 +190,88 @@ pub struct RefsResult {
     pub outgoing: Option<Vec<RefEntry>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub incoming: Option<Vec<RefEntry>>,
+}
+
+/// JSON output for graph command
+#[derive(Debug, Serialize)]
+pub struct GraphResult {
+    pub root: GraphRoot,
+    pub direction: String,
+    pub max_depth: usize,
+    pub max_nodes: usize,
+    pub truncated: bool,
+    pub nodes: Vec<GraphNode>,
+    pub edges: Vec<GraphEdge>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct GraphRoot {
+    pub spec: String,
+    pub anchor: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct GraphNode {
+    pub id: String, // "{spec}#{anchor}"
+    pub spec: String,
+    pub anchor: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "type")]
+    pub section_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub filter_role: Option<String>, // root | matched | bridge
+}
+
+#[derive(Debug, Serialize)]
+pub struct GraphEdge {
+    pub from: String, // node id
+    pub to: String,   // node id
+    pub kind: String, // currently always "reference"
+}
+
+/// JSON output for find-references command
+#[derive(Debug, Serialize)]
+pub struct FindReferencesResult {
+    pub query: String,
+    pub direction: String,
+    pub matches: Vec<FindReferencesMatch>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct FindReferencesMatch {
+    pub spec: String,
+    pub anchor: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(rename = "type")]
+    pub section_type: String,
+    pub resolution: String, // exact | heuristic
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub outgoing: Option<Vec<RefEntry>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub incoming: Option<Vec<RefEntry>>,
+}
+
+/// JSON output for idl command
+#[derive(Debug, Serialize)]
+pub struct IdlResult {
+    pub query: String,
+    pub matches: Vec<IdlEntry>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct IdlEntry {
+    pub spec: String,
+    pub anchor: String,
+    pub kind: String,
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub owner: Option<String>,
+    pub canonical_name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub idl_text: Option<String>,
 }

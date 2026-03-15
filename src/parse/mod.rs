@@ -85,8 +85,8 @@ fn extract_ietf_prose(section: &scraper::ElementRef, converter: &HtmlToMarkdown)
 /// - `section-boilerplate` — Status of This Memo, Copyright Notice
 /// - `section-toc`         — Table of Contents
 fn parse_ietf_html(document: &Html, converter: &HtmlToMarkdown) -> Result<Vec<ParsedSection>> {
-    let section_sel = Selector::parse("section[id]")
-        .map_err(|e| anyhow::anyhow!("Selector error: {:?}", e))?;
+    let section_sel =
+        Selector::parse("section[id]").map_err(|e| anyhow::anyhow!("Selector error: {:?}", e))?;
     let heading_sel = Selector::parse("h2, h3, h4, h5, h6")
         .map_err(|e| anyhow::anyhow!("Selector error: {:?}", e))?;
 
@@ -103,9 +103,7 @@ fn parse_ietf_html(document: &Html, converter: &HtmlToMarkdown) -> Result<Vec<Pa
             continue;
         }
         // Skip non-content sections
-        if section_id.starts_with("section-boilerplate")
-            || section_id.starts_with("section-toc")
-        {
+        if section_id.starts_with("section-boilerplate") || section_id.starts_with("section-toc") {
             continue;
         }
 
@@ -185,7 +183,7 @@ fn parse_generic_html(document: &Html, converter: &HtmlToMarkdown) -> Result<Vec
                 }
             }
             "tr" | "dt" | "section" | "li" => {
-                if let Some(section) = sections::parse_anchor_element(&element, &converter)? {
+                if let Some(section) = sections::parse_anchor_element(&element, converter)? {
                     sections.push(section);
                 }
             }
@@ -461,8 +459,12 @@ mod tests {
 </body>
 </html>"##;
 
-        let parsed = parse_spec(html, "RFC9999", "https://www.rfc-editor.org/rfc/rfc9999.html")
-            .unwrap();
+        let parsed = parse_spec(
+            html,
+            "RFC9999",
+            "https://www.rfc-editor.org/rfc/rfc9999.html",
+        )
+        .unwrap();
 
         // Should have 4 sections: section-1, section-1.1, section-2, appendix-A
         // boilerplate and toc are skipped
@@ -487,10 +489,16 @@ mod tests {
         assert_eq!(parsed.sections[3].depth, Some(2));
 
         // Tree: section-1.1 is child of section-1
-        assert_eq!(parsed.sections[1].parent_anchor, Some("section-1".to_string()));
+        assert_eq!(
+            parsed.sections[1].parent_anchor,
+            Some("section-1".to_string())
+        );
 
         // section-2 has no parent (top-level h2), prev sibling is section-1
         assert_eq!(parsed.sections[2].parent_anchor, None);
-        assert_eq!(parsed.sections[2].prev_anchor, Some("section-1".to_string()));
+        assert_eq!(
+            parsed.sections[2].prev_anchor,
+            Some("section-1".to_string())
+        );
     }
 }

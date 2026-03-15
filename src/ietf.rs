@@ -85,8 +85,8 @@ pub fn canonical_ietf_name(name: &str) -> String {
 /// Check whether a spec name looks like an IETF document (RFC or draft).
 pub fn is_ietf_name(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
-    if lower.starts_with("rfc") {
-        return lower[3..].chars().next().is_some_and(|c| c.is_ascii_digit());
+    if let Some(rest) = lower.strip_prefix("rfc") {
+        return rest.chars().next().is_some_and(|c| c.is_ascii_digit());
     }
     lower.starts_with("draft-")
 }
@@ -164,8 +164,7 @@ pub fn resolve_url(url: &str) -> Option<(String, String, String)> {
                 let doc_name = rest.trim_end_matches(".html").trim_end_matches(".txt");
                 if doc_name.starts_with("draft-") {
                     let canonical = canonical_ietf_name(doc_name);
-                    let base =
-                        format!("https://www.ietf.org/archive/id/{}.html", doc_name);
+                    let base = format!("https://www.ietf.org/archive/id/{}.html", doc_name);
                     (canonical, base)
                 } else {
                     return None;
@@ -209,10 +208,7 @@ fn make_http_client() -> Result<reqwest::Client> {
         .map_err(Into::into)
 }
 
-async fn fetch_doc_meta(
-    client: &reqwest::Client,
-    name: &str,
-) -> Result<Option<DataTrackerDoc>> {
+async fn fetch_doc_meta(client: &reqwest::Client, name: &str) -> Result<Option<DataTrackerDoc>> {
     let url = format!("{}/document/{}/", DATATRACKER_API_BASE, name.to_lowercase());
     let resp = client
         .get(&url)
@@ -243,10 +239,7 @@ fn extract_doc_name_from_uri(uri: &str) -> Option<&str> {
 
 /// Follow the obsoleted_by chain for an RFC until we reach the terminal
 /// (non-obsoleted) RFC. Returns the terminal RFC name (lowercase).
-async fn follow_obsoleted_by_chain(
-    client: &reqwest::Client,
-    start_name: &str,
-) -> Result<String> {
+async fn follow_obsoleted_by_chain(client: &reqwest::Client, start_name: &str) -> Result<String> {
     let mut current = start_name.to_lowercase();
     let mut seen: HashSet<String> = HashSet::new();
 
@@ -366,10 +359,7 @@ pub async fn discover_spec(name: &str) -> Result<Option<(String, String)>> {
                 base.to_string()
             };
 
-            let html_url = format!(
-                "https://datatracker.ietf.org/doc/html/{}-{}",
-                base, rev
-            );
+            let html_url = format!("https://datatracker.ietf.org/doc/html/{}-{}", base, rev);
 
             Ok(Some((canonical_name, html_url)))
         }
@@ -471,8 +461,7 @@ mod tests {
 
     #[test]
     fn test_resolve_datatracker_draft_html() {
-        let r =
-            resolve_url("https://datatracker.ietf.org/doc/html/draft-touch-sne-02#section-1");
+        let r = resolve_url("https://datatracker.ietf.org/doc/html/draft-touch-sne-02#section-1");
         let (name, anchor, _) = r.unwrap();
         assert_eq!(name, "draft-touch-sne");
         assert_eq!(anchor, "section-1");
@@ -504,9 +493,7 @@ mod tests {
 
     #[test]
     fn test_resolve_ietf_archive_html() {
-        let r = resolve_url(
-            "https://www.ietf.org/archive/id/draft-touch-sne-02.html#section-1",
-        );
+        let r = resolve_url("https://www.ietf.org/archive/id/draft-touch-sne-02.html#section-1");
         let (name, anchor, _) = r.unwrap();
         assert_eq!(name, "draft-touch-sne");
         assert_eq!(anchor, "section-1");

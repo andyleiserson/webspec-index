@@ -31,7 +31,7 @@ cargo install webspec-index
 # Look up a spec section (algorithm, definition, heading, IDL)
 webspec-index query "HTML#navigate"
 webspec-index query "https://html.spec.whatwg.org/#navigate"
-webspec-index query "https://wicg.github.io/permissions-policy/#permissions-policy"
+webspec-index query "https://w3c.github.io/webappsec-permissions-policy/#permissions-policy-header"
 webspec-index query "DOM#concept-tree" --format markdown
 
 # Full-text search

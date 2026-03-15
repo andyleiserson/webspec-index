@@ -36,7 +36,7 @@ webspec-index query 'HTML#navigate'
 webspec-index query 'DOM#concept-tree'
 webspec-index query 'CSS-GRID#grid-container'
 webspec-index query 'https://html.spec.whatwg.org/#navigate'
-webspec-index query 'https://wicg.github.io/permissions-policy/#permissions-policy'
+webspec-index query 'https://w3c.github.io/webappsec-permissions-policy/#permissions-policy-header'
 ```
 
 Returns the section's title, type (heading/algorithm/definition), full content as markdown, navigation tree (parent/prev/next/children), and cross-references. This is the primary command — use it to read what a spec section says.

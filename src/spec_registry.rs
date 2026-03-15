@@ -12,10 +12,16 @@ impl SpecRegistry {
 
     /// Map a URL to (derived_spec_name, anchor) if recognized.
     pub fn resolve_url(&self, url: &str) -> Option<(String, String)> {
+        let (spec_name, anchor, _base_url) = self.resolve_url_with_base(url)?;
+        Some((spec_name, anchor))
+    }
+
+    /// Map a URL to (derived_spec_name, anchor, base_url) if recognized.
+    pub fn resolve_url_with_base(&self, url: &str) -> Option<(String, String, String)> {
         let (base_url, anchor) = auto_base_url_from_url(url)?;
         let spec_name = derive_spec_name_for_base_url(&base_url)
             .unwrap_or_else(|| auto_spec_name_for_base_url(&base_url));
-        Some((spec_name, anchor))
+        Some((spec_name, anchor, base_url))
     }
 
     /// Infer (base_url, provider) from a short spec name when possible.
@@ -65,6 +71,30 @@ impl SpecRegistry {
                 format!("https://{host_part}.spec.whatwg.org"),
                 "whatwg".to_string(),
             ));
+        }
+
+        // Support org-prefixed names: WICG/foo, W3C/foo, WHATWG/foo, TC39/foo
+        // This lets users query specs not in the bundled list by name.
+        if let Some((org, rest)) = spec_name.split_once('/') {
+            let slug = rest.trim().to_ascii_lowercase();
+            if slug.is_empty() {
+                return None;
+            }
+            match org.trim().to_ascii_uppercase().as_str() {
+                "WICG" => {
+                    return Some((format!("https://wicg.github.io/{slug}"), "w3c".to_string()))
+                }
+                "W3C" => return Some((format!("https://w3c.github.io/{slug}"), "w3c".to_string())),
+                "WHATWG" => {
+                    let host = slug.replace('-', "");
+                    return Some((
+                        format!("https://{host}.spec.whatwg.org"),
+                        "whatwg".to_string(),
+                    ));
+                }
+                "TC39" => return Some((format!("https://tc39.es/{slug}"), "tc39".to_string())),
+                _ => {}
+            }
         }
 
         None
@@ -277,5 +307,39 @@ mod tests {
         let (base, provider) = registry.infer_base_url_from_spec_name("ECMA-262").unwrap();
         assert_eq!(base, "https://tc39.es/ecma262");
         assert_eq!(provider, "tc39");
+    }
+
+    #[test]
+    fn infer_org_prefixed_names() {
+        let registry = SpecRegistry::new();
+
+        let (base, provider) = registry
+            .infer_base_url_from_spec_name("WICG/scroll-to-text-fragment")
+            .unwrap();
+        assert_eq!(base, "https://wicg.github.io/scroll-to-text-fragment");
+        assert_eq!(provider, "w3c");
+
+        let (base, provider) = registry
+            .infer_base_url_from_spec_name("W3C/ServiceWorker")
+            .unwrap();
+        assert_eq!(base, "https://w3c.github.io/serviceworker");
+        assert_eq!(provider, "w3c");
+
+        let (base, provider) = registry
+            .infer_base_url_from_spec_name("WHATWG/fetch")
+            .unwrap();
+        assert_eq!(base, "https://fetch.spec.whatwg.org");
+        assert_eq!(provider, "whatwg");
+
+        let (base, provider) = registry
+            .infer_base_url_from_spec_name("TC39/ecma262")
+            .unwrap();
+        assert_eq!(base, "https://tc39.es/ecma262");
+        assert_eq!(provider, "tc39");
+
+        assert!(registry.infer_base_url_from_spec_name("WICG/").is_none());
+        assert!(registry
+            .infer_base_url_from_spec_name("UNKNOWN/foo")
+            .is_none());
     }
 }

@@ -19,14 +19,19 @@ use rusqlite::Connection;
 use std::collections::{HashMap, HashSet, VecDeque};
 
 /// Parse a spec#anchor string or full URL into (spec, anchor) tuple
-pub fn parse_spec_anchor(input: &str) -> Result<(String, String)> {
+/// Parse a spec anchor string into (spec_name, anchor, Option<base_url>).
+///
+/// The third element is `Some(base_url)` when the input was a URL on a
+/// whitelisted domain — callers can use it as a hint to fetch specs that
+/// aren't in the bundled list yet.
+pub fn parse_spec_anchor(input: &str) -> Result<(String, String, Option<String>)> {
     let trimmed = input.trim();
 
     // Try URL first
     if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
         let registry = spec_registry::SpecRegistry::new();
-        if let Some((spec, anchor)) = registry.resolve_url(trimmed) {
-            return Ok((spec, anchor));
+        if let Some((spec, anchor, base_url)) = registry.resolve_url_with_base(trimmed) {
+            return Ok((spec, anchor, Some(base_url)));
         }
         anyhow::bail!(
             "URL not recognized. Use a known SPEC#anchor, or a whitelisted URL domain with a #fragment: {trimmed}"
@@ -37,8 +42,8 @@ pub fn parse_spec_anchor(input: &str) -> Result<(String, String)> {
     if trimmed.contains('#') && trimmed.contains('/') && !trimmed.contains("://") {
         let maybe_url = format!("https://{}", trimmed.trim_start_matches('/'));
         let registry = spec_registry::SpecRegistry::new();
-        if let Some((spec, anchor)) = registry.resolve_url(&maybe_url) {
-            return Ok((spec, anchor));
+        if let Some((spec, anchor, base_url)) = registry.resolve_url_with_base(&maybe_url) {
+            return Ok((spec, anchor, Some(base_url)));
         }
     }
 
@@ -47,7 +52,7 @@ pub fn parse_spec_anchor(input: &str) -> Result<(String, String)> {
     if parts.len() != 2 {
         anyhow::bail!("Invalid format. Expected SPEC#anchor or a full spec URL");
     }
-    Ok((parts[0].to_string(), parts[1].to_string()))
+    Ok((parts[0].to_string(), parts[1].to_string(), None))
 }
 
 /// Return indexed/discovered spec base URLs
@@ -68,6 +73,7 @@ fn resolve_spec_metadata(
     conn: &Connection,
     registry: &spec_registry::SpecRegistry,
     spec_name: &str,
+    base_url_hint: Option<&str>,
 ) -> Result<(String, String, String)> {
     if let Some((name, base_url, provider)) = db::queries::get_spec_meta(conn, spec_name)? {
         return Ok((name, base_url, provider));
@@ -87,6 +93,13 @@ fn resolve_spec_metadata(
         return Ok((spec_name.to_string(), base_url, provider));
     }
 
+    // Last resort: if caller provided a base URL (from a whitelisted-domain URL
+    // query), use it directly. This lets us fetch specs not in the bundled list.
+    if let Some(base_url) = base_url_hint {
+        let provider = spec_registry::provider_for_base_url(base_url).to_string();
+        return Ok((spec_name.to_string(), base_url.to_string(), provider));
+    }
+
     anyhow::bail!("Unknown spec: {}", spec_name)
 }
 
@@ -94,13 +107,14 @@ async fn ensure_indexed_for_spec_name(
     conn: &Connection,
     registry: &spec_registry::SpecRegistry,
     spec_name: &str,
+    base_url_hint: Option<&str>,
 ) -> Result<(i64, String)> {
-    let meta = resolve_spec_metadata(conn, registry, spec_name);
+    let meta = resolve_spec_metadata(conn, registry, spec_name, base_url_hint);
     let (canonical_name, base_url, provider) = match meta {
         Ok(m) => m,
         Err(_) => {
             spec_list::fetch_and_seed(conn)?;
-            resolve_spec_metadata(conn, registry, spec_name)?
+            resolve_spec_metadata(conn, registry, spec_name, base_url_hint)?
         }
     };
     let snapshot_id = fetch::ensure_indexed(conn, &canonical_name, &base_url, &provider).await?;
@@ -114,11 +128,12 @@ async fn ensure_indexed_for_spec_name(
 /// # Arguments
 /// * `spec_anchor` - Format: "SPEC#anchor" (e.g., "HTML#navigate")
 pub async fn query_section(spec_anchor: &str) -> Result<model::QueryResult> {
-    let (spec_name, anchor) = parse_spec_anchor(spec_anchor)?;
+    let (spec_name, anchor, base_url_hint) = parse_spec_anchor(spec_anchor)?;
     let conn = db::open_or_create_db()?;
     let registry = spec_registry::SpecRegistry::new();
     let (snapshot_id, spec_name) =
-        ensure_indexed_for_spec_name(&conn, &registry, &spec_name).await?;
+        ensure_indexed_for_spec_name(&conn, &registry, &spec_name, base_url_hint.as_deref())
+            .await?;
 
     let snapshot_sha: String = conn.query_row(
         "SELECT sha FROM snapshots WHERE id = ?1",
@@ -204,11 +219,12 @@ pub async fn query_section(spec_anchor: &str) -> Result<model::QueryResult> {
 /// # Returns
 /// `ExistsResult` with existence status and section type if found
 pub async fn check_exists(spec_anchor: &str) -> Result<model::ExistsResult> {
-    let (spec_name, anchor) = parse_spec_anchor(spec_anchor)?;
+    let (spec_name, anchor, base_url_hint) = parse_spec_anchor(spec_anchor)?;
     let conn = db::open_or_create_db()?;
     let registry = spec_registry::SpecRegistry::new();
     let (snapshot_id, spec_name) =
-        ensure_indexed_for_spec_name(&conn, &registry, &spec_name).await?;
+        ensure_indexed_for_spec_name(&conn, &registry, &spec_name, base_url_hint.as_deref())
+            .await?;
 
     // Check if section exists
     let section = db::queries::get_section(&conn, snapshot_id, &anchor)?;
@@ -234,11 +250,7 @@ pub async fn check_exists(spec_anchor: &str) -> Result<model::ExistsResult> {
 ///
 /// # Returns
 /// `AnchorsResult` with matching anchors
-pub fn find_anchors(
-    pattern: &str,
-    spec: Option<&str>,
-    limit: u32,
-) -> Result<model::AnchorsResult> {
+pub fn find_anchors(pattern: &str, spec: Option<&str>, limit: u32) -> Result<model::AnchorsResult> {
     let conn = db::open_or_create_db()?;
 
     // Convert glob pattern to SQL LIKE pattern
@@ -298,11 +310,7 @@ pub fn find_anchors(
 ///
 /// # Returns
 /// `SearchResult` with matching sections and snippets
-pub fn search_sections(
-    query: &str,
-    spec: Option<&str>,
-    limit: u32,
-) -> Result<model::SearchResult> {
+pub fn search_sections(query: &str, spec: Option<&str>, limit: u32) -> Result<model::SearchResult> {
     let conn = db::open_or_create_db()?;
     let entries = match search_sections_fts(&conn, query, spec, limit) {
         Ok(entries) => entries,
@@ -392,7 +400,8 @@ fn sanitize_for_fts(query: &str) -> Option<String> {
 pub async fn list_headings(spec: &str) -> Result<Vec<model::ListEntry>> {
     let conn = db::open_or_create_db()?;
     let registry = spec_registry::SpecRegistry::new();
-    let (snapshot_id, _spec_name) = ensure_indexed_for_spec_name(&conn, &registry, spec).await?;
+    let (snapshot_id, _spec_name) =
+        ensure_indexed_for_spec_name(&conn, &registry, spec, None).await?;
 
     // Get all headings
     let headings = db::queries::list_headings(&conn, snapshot_id)?;
@@ -420,11 +429,12 @@ pub async fn list_headings(spec: &str) -> Result<Vec<model::ListEntry>> {
 /// # Returns
 /// `RefsResult` with incoming and/or outgoing references
 pub async fn get_references(spec_anchor: &str, direction: &str) -> Result<model::RefsResult> {
-    let (spec_name, anchor) = parse_spec_anchor(spec_anchor)?;
+    let (spec_name, anchor, base_url_hint) = parse_spec_anchor(spec_anchor)?;
     let conn = db::open_or_create_db()?;
     let registry = spec_registry::SpecRegistry::new();
     let (snapshot_id, spec_name) =
-        ensure_indexed_for_spec_name(&conn, &registry, &spec_name).await?;
+        ensure_indexed_for_spec_name(&conn, &registry, &spec_name, base_url_hint.as_deref())
+            .await?;
 
     // Get references based on direction
     let outgoing = if direction == "outgoing" || direction == "both" {
@@ -1061,7 +1071,7 @@ fn query_idl_from_conn(
     let mut entries = Vec::new();
 
     // Exact anchor lookup
-    if let Ok((spec_name, anchor)) = parse_spec_anchor(query) {
+    if let Ok((spec_name, anchor, _)) = parse_spec_anchor(query) {
         if spec_filter.is_some() && spec_filter != Some(spec_name.as_str()) {
             return Ok(model::IdlResult {
                 query: query.to_string(),
@@ -1199,12 +1209,13 @@ pub async fn graph_section(
     exclude: &[String],
     same_spec_only: bool,
 ) -> Result<model::GraphResult> {
-    let (spec_name, anchor) = parse_spec_anchor(spec_anchor)?;
+    let (spec_name, anchor, base_url_hint) = parse_spec_anchor(spec_anchor)?;
     let conn = db::open_or_create_db()?;
     let registry = spec_registry::SpecRegistry::new();
 
     let (_snapshot_id, spec_name) =
-        ensure_indexed_for_spec_name(&conn, &registry, &spec_name).await?;
+        ensure_indexed_for_spec_name(&conn, &registry, &spec_name, base_url_hint.as_deref())
+            .await?;
 
     let filters = GraphFilters {
         include: include.to_vec(),
@@ -1231,9 +1242,11 @@ pub async fn query_idl(
     let registry = spec_registry::SpecRegistry::new();
 
     if let Some(spec_name) = spec_filter {
-        let _ = ensure_indexed_for_spec_name(&conn, &registry, spec_name).await?;
-    } else if let Ok((spec_name, _)) = parse_spec_anchor(query) {
-        let _ = ensure_indexed_for_spec_name(&conn, &registry, &spec_name).await?;
+        let _ = ensure_indexed_for_spec_name(&conn, &registry, spec_name, None).await?;
+    } else if let Ok((spec_name, _, base_url_hint)) = parse_spec_anchor(query) {
+        let _ =
+            ensure_indexed_for_spec_name(&conn, &registry, &spec_name, base_url_hint.as_deref())
+                .await?;
     }
 
     query_idl_from_conn(&conn, query, spec_filter, limit)
@@ -1249,9 +1262,14 @@ pub async fn find_references(
     let registry = spec_registry::SpecRegistry::new();
 
     let exact_target = match parse_spec_anchor(target) {
-        Ok((spec_name, anchor)) => {
-            let (_snapshot_id, canonical_spec_name) =
-                ensure_indexed_for_spec_name(&conn, &registry, &spec_name).await?;
+        Ok((spec_name, anchor, base_url_hint)) => {
+            let (_snapshot_id, canonical_spec_name) = ensure_indexed_for_spec_name(
+                &conn,
+                &registry,
+                &spec_name,
+                base_url_hint.as_deref(),
+            )
+            .await?;
             Some((canonical_spec_name, anchor))
         }
         Err(_) => None,
@@ -1278,7 +1296,7 @@ pub async fn update_specs(spec: Option<&str>, force: bool) -> Result<Vec<(String
     if let Some(spec_name) = spec {
         // Update single spec
         let (canonical_name, base_url, provider) =
-            resolve_spec_metadata(&conn, &registry, spec_name)?;
+            resolve_spec_metadata(&conn, &registry, spec_name, None)?;
         let snapshot_id =
             fetch::update_if_needed(&conn, &canonical_name, &base_url, &provider, force).await?;
         results.push((canonical_name, snapshot_id));
@@ -1526,21 +1544,22 @@ mod tests {
 
     #[test]
     fn parse_spec_anchor_classic_format() {
-        let (spec, anchor) = parse_spec_anchor("HTML#navigate").unwrap();
+        let (spec, anchor, _) = parse_spec_anchor("HTML#navigate").unwrap();
         assert_eq!(spec, "HTML");
         assert_eq!(anchor, "navigate");
     }
 
     #[test]
     fn parse_spec_anchor_url_format() {
-        let (spec, anchor) = parse_spec_anchor("https://html.spec.whatwg.org/#navigate").unwrap();
+        let (spec, anchor, _) =
+            parse_spec_anchor("https://html.spec.whatwg.org/#navigate").unwrap();
         assert_eq!(spec, "HTML");
         assert_eq!(anchor, "navigate");
     }
 
     #[test]
     fn parse_spec_anchor_url_dom() {
-        let (spec, anchor) =
+        let (spec, anchor, _) =
             parse_spec_anchor("https://dom.spec.whatwg.org/#concept-tree").unwrap();
         assert_eq!(spec, "DOM");
         assert_eq!(anchor, "concept-tree");
@@ -1548,18 +1567,23 @@ mod tests {
 
     #[test]
     fn parse_spec_anchor_url_without_scheme() {
-        let (spec, anchor) = parse_spec_anchor("html.spec.whatwg.org/#navigate").unwrap();
+        let (spec, anchor, _) = parse_spec_anchor("html.spec.whatwg.org/#navigate").unwrap();
         assert_eq!(spec, "HTML");
         assert_eq!(anchor, "navigate");
     }
 
     #[test]
     fn parse_spec_anchor_auto_whitelisted_url() {
-        let (spec, anchor) =
-            parse_spec_anchor("https://wicg.github.io/permissions-policy/#permissions-policy")
-                .unwrap();
-        assert_eq!(spec, "PERMISSIONS-POLICY");
-        assert_eq!(anchor, "permissions-policy");
+        let (spec, anchor, base_url) = parse_spec_anchor(
+            "https://w3c.github.io/webappsec-permissions-policy/#permissions-policy-header",
+        )
+        .unwrap();
+        assert_eq!(spec, "WEBAPPSEC-PERMISSIONS-POLICY");
+        assert_eq!(anchor, "permissions-policy-header");
+        assert_eq!(
+            base_url.as_deref(),
+            Some("https://w3c.github.io/webappsec-permissions-policy")
+        );
     }
 
     #[test]

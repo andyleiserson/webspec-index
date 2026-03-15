@@ -250,14 +250,14 @@ mod tests {
         let path = Ext::managed_binary_path(zed::Os::Linux);
         assert!(path.ends_with(
             Path::new("webspec-index")
-                .join("v0.5.0")
+                .join("v0.6.0")
                 .join("webspec-index")
         ));
 
         let path = Ext::managed_binary_path(zed::Os::Windows);
         assert!(path.ends_with(
             Path::new("webspec-index")
-                .join("v0.5.0")
+                .join("v0.6.0")
                 .join("webspec-index.exe")
         ));
     }

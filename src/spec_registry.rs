@@ -166,10 +166,7 @@ fn derive_spec_name_for_base_url(base_url: &str) -> Option<String> {
         let slug = host.strip_suffix(".spec.whatwg.org")?;
         normalize_spec_token(slug)
     } else if host == "gpuweb.github.io" {
-        let segs: Vec<&str> = parsed
-            .path_segments()?
-            .filter(|s| !s.is_empty())
-            .collect();
+        let segs: Vec<&str> = parsed.path_segments()?.filter(|s| !s.is_empty()).collect();
         match segs.as_slice() {
             ["gpuweb", "wgsl"] => "WGSL".to_string(),
             ["gpuweb"] => "WEBGPU".to_string(),
@@ -222,10 +219,7 @@ fn auto_base_url_from_url(url: &str) -> Option<(String, String)> {
     let base_url = if host.ends_with(".spec.whatwg.org") {
         format!("{scheme}://{host}")
     } else if host == "gpuweb.github.io" {
-        let segs: Vec<&str> = parsed
-            .path_segments()?
-            .filter(|s| !s.is_empty())
-            .collect();
+        let segs: Vec<&str> = parsed.path_segments()?.filter(|s| !s.is_empty()).collect();
         match segs.as_slice() {
             ["gpuweb", "wgsl", ..] => format!("{scheme}://gpuweb.github.io/gpuweb/wgsl"),
             ["gpuweb", ..] => format!("{scheme}://gpuweb.github.io/gpuweb"),
